@@ -1,0 +1,104 @@
+Step 1: Convert to ONNX
+On your desktop, first convert the model to ONNX:
+
+from diffusers import StableDiffusionInstructPix2PixPipeline
+import torch
+
+# Load the model
+model_id = "timbrooks/instruct-pix2pix"
+pipe = StableDiffusionInstructPix2PixPipeline.from_pretrained(model_id, torch_dtype=torch.float16)
+pipe.to("cuda")
+
+# Convert UNet to ONNX
+dummy_input = torch.randn(1, 4, 64, 64, device="cuda")
+torch.onnx.export(pipe.unet, dummy_input, "unet.onnx", opset_version=17)
+
+Step 2: Convert ONNX to TensorFlow
+Now, convert the ONNX model to TensorFlow:
+
+
+import onnx
+from onnx_tf.backend import prepare
+
+onnx_model = onnx.load("unet.onnx")
+tf_rep = prepare(onnx_model)
+tf_rep.export_graph("unet_tf")
+
+Step 3: Convert TensorFlow to TFLite
+
+import tensorflow as tf
+
+converter = tf.lite.TFLiteConverter.from_saved_model("unet_tf")
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+tflite_model = converter.convert()
+
+with open("unet.tflite", "wb") as f:
+    f.write(tflite_model)
+Repeat this for the VAE Decoder and Text Encoder.
+2. Load the Model in Android
+Now, move the .tflite files to app/src/main/assets/.
+
+Add Dependencies
+gradle
+Copy
+Edit
+dependencies {
+    implementation 'org.tensorflow:tensorflow-lite:2.9.0'
+}
+Load the Model
+java
+Copy
+Edit
+import org.tensorflow.lite.Interpreter;
+import android.content.Context;
+import java.io.*;
+
+public class TFLiteModelLoader {
+    private Interpreter tflite;
+
+    public TFLiteModelLoader(Context context, String modelName) {
+        try {
+            tflite = new Interpreter(loadModelFile(context, modelName));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private MappedByteBuffer loadModelFile(Context context, String modelName) throws IOException {
+        AssetFileDescriptor fileDescriptor = context.getAssets().openFd(modelName);
+        FileInputStream inputStream = new FileInputStream(fileDescriptor.getFileDescriptor());
+        FileChannel fileChannel = inputStream.getChannel();
+        return fileChannel.map(FileChannel.MapMode.READ_ONLY, fileDescriptor.getStartOffset(), fileDescriptor.getDeclaredLength());
+    }
+
+    public Interpreter getInterpreter() {
+        return tflite;
+    }
+}
+Now, you can initialize it like this:
+
+java
+Copy
+Edit
+TFLiteModelLoader unetModel = new TFLiteModelLoader(context, "unet.tflite");
+3. Run Inference
+After loading the model, process images using TensorFlow Lite Interpreter.
+
+java
+Copy
+Edit
+import org.tensorflow.lite.Interpreter;
+import java.nio.*;
+
+public class Inference {
+    private Interpreter tflite;
+
+    public Inference(Interpreter interpreter) {
+        this.tflite = interpreter;
+    }
+
+    public void runModel(float[][][][] input, float[][][][] output) {
+        tflite.run(input, output);
+    }
+}
+Pass the input image and text prompt through the Text Encoder, process it with UNet, and decode it with the VAE.
